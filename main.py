@@ -5,7 +5,7 @@ import asyncio
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.responses import FileResponse, JSONResponse
@@ -28,7 +28,9 @@ def save_input(value, index: int, workdir: str) -> Optional[str]:
     if isinstance(value, str):
         ext = Path(value.split("?")[0]).suffix or ".bin"
         dest = os.path.join(workdir, f"input{index}{ext}")
-        urllib.request.urlretrieve(value, dest)
+        req = urllib.request.Request(value, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as response, open(dest, "wb") as f:
+            shutil.copyfileobj(response, f)
         return dest
     if hasattr(value, "file"):
         ext = Path(value.filename).suffix if value.filename else ".bin"
@@ -87,7 +89,6 @@ async def upload_job(
     job_id = str(uuid.uuid4())
     workdir = tempfile.mkdtemp(prefix=f"ffmpeg_{job_id}_")
 
-    # Build input list in order: file(URL), file1(binary), file2(URL), file3(URL), file4(binary), file5(binary)
     raw_inputs = [file, file1, file2, file3, file4, file5, file6, file7]
     input_paths = []
 
