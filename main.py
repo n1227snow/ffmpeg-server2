@@ -6,12 +6,18 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="FFmpeg REST API")
 
 JOBS = {}  # in-memory job store
+
+API_KEY = os.environ.get("API_KEY", "changeme")
+
+def check_auth(authorization: Optional[str] = None):
+    if not authorization or authorization != f"Apikey {API_KEY}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def resolve_command(command: str, input_paths: list[str], output_path: str) -> str:
@@ -49,6 +55,7 @@ async def run_job(job_id: str, input_paths: list[str], full_command: str, output
 
 @app.post("/api/ffmpeg/jobs/upload")
 async def upload_job(
+    authorization: Optional[str] = Header(None),
     full_command: str = Form(...),
     output_extension: str = Form(...),
     file: Optional[UploadFile] = File(None),
@@ -60,6 +67,7 @@ async def upload_job(
     file6: Optional[UploadFile] = File(None),
     file7: Optional[UploadFile] = File(None),
 ):
+    check_auth(authorization)
     job_id = str(uuid.uuid4())
     workdir = tempfile.mkdtemp(prefix=f"ffmpeg_{job_id}_")
 
@@ -90,7 +98,8 @@ async def upload_job(
 
 
 @app.get("/api/ffmpeg/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -98,7 +107,8 @@ async def get_job(job_id: str):
 
 
 @app.get("/api/ffmpeg/jobs/{job_id}/download")
-async def download_job(job_id: str):
+async def download_job(job_id: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
