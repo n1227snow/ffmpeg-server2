@@ -3,34 +3,51 @@ import uuid
 import shutil
 import asyncio
 import tempfile
+import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="FFmpeg REST API")
 
-JOBS = {}  # in-memory job store
+JOBS = {}
 
 API_KEY = os.environ.get("API_KEY", "changeme")
+
 
 def check_auth(authorization: Optional[str] = None):
     if not authorization or authorization != f"Apikey {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def resolve_command(command: str, input_paths: list[str], output_path: str) -> str:
-    # Replace {input0}, {input1}, etc.
+def save_input(value, index: int, workdir: str) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        ext = Path(value.split("?")[0]).suffix or ".bin"
+        dest = os.path.join(workdir, f"input{index}{ext}")
+        urllib.request.urlretrieve(value, dest)
+        return dest
+    if hasattr(value, "file"):
+        ext = Path(value.filename).suffix if value.filename else ".bin"
+        dest = os.path.join(workdir, f"input{index}{ext}")
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(value.file, f)
+        return dest
+    return None
+
+
+def resolve_command(command: str, input_paths: list, output_path: str) -> str:
     for i, path in enumerate(input_paths):
         command = command.replace(f"{{input{i}}}", path)
-    # {input} alone maps to first file
     command = command.replace("{input}", input_paths[0] if input_paths else "")
     command = command.replace("{output}", output_path)
     return command
 
 
-async def run_job(job_id: str, input_paths: list[str], full_command: str, output_path: str, workdir: str):
+async def run_job(job_id: str, input_paths: list, full_command: str, output_path: str, workdir: str):
     JOBS[job_id]["status"] = "PROCESSING"
     try:
         cmd = resolve_command(full_command, input_paths, output_path)
@@ -41,10 +58,9 @@ async def run_job(job_id: str, input_paths: list[str], full_command: str, output
             cwd=workdir
         )
         stdout, stderr = await proc.communicate()
-
         if proc.returncode != 0:
             JOBS[job_id]["status"] = "FAILED"
-            JOBS[job_id]["error"] = stderr.decode()[-1000:]
+            JOBS[job_id]["error"] = stderr.decode()[-2000:]
         else:
             JOBS[job_id]["status"] = "FINISHED"
             JOBS[job_id]["output_path"] = output_path
@@ -58,10 +74,10 @@ async def upload_job(
     authorization: Optional[str] = Header(None),
     full_command: str = Form(...),
     output_extension: str = Form(...),
-    file: Optional[UploadFile] = File(None),
+    file: Optional[str] = Form(None),
     file1: Optional[UploadFile] = File(None),
-    file2: Optional[UploadFile] = File(None),
-    file3: Optional[UploadFile] = File(None),
+    file2: Optional[str] = Form(None),
+    file3: Optional[str] = Form(None),
     file4: Optional[UploadFile] = File(None),
     file5: Optional[UploadFile] = File(None),
     file6: Optional[UploadFile] = File(None),
@@ -71,16 +87,16 @@ async def upload_job(
     job_id = str(uuid.uuid4())
     workdir = tempfile.mkdtemp(prefix=f"ffmpeg_{job_id}_")
 
-    # Save all uploaded files in order
-    uploaded = [f for f in [file, file1, file2, file3, file4, file5, file6, file7] if f is not None]
+    # Build input list in order: file(URL), file1(binary), file2(URL), file3(URL), file4(binary), file5(binary)
+    raw_inputs = [file, file1, file2, file3, file4, file5, file6, file7]
     input_paths = []
 
-    for i, upload in enumerate(uploaded):
-        ext = Path(upload.filename).suffix if upload.filename else f".bin"
-        dest = os.path.join(workdir, f"input{i}{ext}")
-        with open(dest, "wb") as f:
-            shutil.copyfileobj(upload.file, f)
-        input_paths.append(dest)
+    for i, val in enumerate(raw_inputs):
+        if val is None:
+            continue
+        path = save_input(val, i, workdir)
+        if path:
+            input_paths.append(path)
 
     output_path = os.path.join(workdir, f"output.{output_extension}")
 
@@ -91,7 +107,6 @@ async def upload_job(
         "workdir": workdir,
     }
 
-    # Run ffmpeg in background
     asyncio.create_task(run_job(job_id, input_paths, full_command, output_path, workdir))
 
     return JSONResponse({"success": True, "job_id": job_id, "status": "PENDING"}, status_code=202)
@@ -114,11 +129,9 @@ async def download_job(job_id: str, authorization: Optional[str] = Header(None))
         raise HTTPException(status_code=404, detail="Job not found")
     if job["status"] != "FINISHED":
         raise HTTPException(status_code=400, detail=f"Job not finished, status: {job['status']}")
-
     output_path = job["output_path"]
     if not output_path or not os.path.exists(output_path):
         raise HTTPException(status_code=404, detail="Output file not found")
-
     return FileResponse(output_path, filename=Path(output_path).name)
 
 
