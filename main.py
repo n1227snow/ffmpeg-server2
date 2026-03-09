@@ -41,18 +41,30 @@ def save_input(value, index: int, workdir: str) -> Optional[str]:
     return None
 
 
-def resolve_command(command: str, input_paths: list, output_path: str) -> str:
+def resolve_placeholders(text: str, input_paths: list, output_path: str) -> str:
     for i, path in enumerate(input_paths):
-        command = command.replace(f"{{input{i}}}", path)
-    command = command.replace("{input}", input_paths[0] if input_paths else "")
-    command = command.replace("{output}", output_path)
-    return command
+        text = text.replace(f"{{input{i}}}", path)
+    text = text.replace("{input}", input_paths[0] if input_paths else "")
+    text = text.replace("{output}", output_path)
+    return text
 
 
 async def run_job(job_id: str, input_paths: list, full_command: str, output_path: str, workdir: str):
     JOBS[job_id]["status"] = "PROCESSING"
     try:
-        cmd = resolve_command(full_command, input_paths, output_path)
+        # Resolve placeholders inside any text/script files (e.g. filter_complex_script)
+        for path in input_paths:
+            try:
+                with open(path, "r") as f:
+                    content = f.read()
+                resolved = resolve_placeholders(content, input_paths, output_path)
+                if resolved != content:
+                    with open(path, "w") as f:
+                        f.write(resolved)
+            except (UnicodeDecodeError, IsADirectoryError):
+                pass  # skip binary files
+
+        cmd = resolve_placeholders(full_command, input_paths, output_path)
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
